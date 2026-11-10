@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mailer Control Panel</title>
+<style>
+:root{--bg:#f4f6f9;--card:#fff;--tx:#1c2430;--mu:#667085;--bd:#d8dee8;--pr:#2457d6;--rd:#c62828;--gn:#1b7f3b}
+@media(prefers-color-scheme:dark){:root{--bg:#12161c;--card:#1b212b;--tx:#e8ecf2;--mu:#9aa6b8;--bd:#2d3644;--pr:#6c93ff;--rd:#ef5350;--gn:#4cc472}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--card);border-bottom:1px solid var(--bd);gap:8px;flex-wrap:wrap}
+h1{font-size:18px;margin:0}h2{font-size:16px;margin:0 0 10px}
+main{max-width:760px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:16px;margin-bottom:14px}
+label{display:block;font-weight:600;margin:12px 0 4px}
+input[type=text],input[type=email],input[type=password],input[type=number],input[type=datetime-local],select,textarea{width:100%;padding:10px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit}
+textarea{min-height:200px;resize:vertical}
+.row{display:flex;gap:16px;flex-wrap:wrap}.row label{display:flex;align-items:center;gap:6px;font-weight:400;margin:4px 0}
+button{padding:10px 16px;border:0;border-radius:8px;background:var(--pr);color:#fff;font:inherit;font-weight:600;cursor:pointer;margin:6px 6px 0 0}
+button.sec{background:transparent;color:var(--pr);border:1px solid var(--pr)}
+button.stop{background:var(--rd)}button:disabled{opacity:.5}
+nav{display:flex;gap:6px;overflow-x:auto;margin-bottom:14px}
+nav button{margin:0;background:var(--card);color:var(--tx);border:1px solid var(--bd);white-space:nowrap}
+nav button.on{background:var(--pr);color:#fff;border-color:var(--pr)}
+.hint{color:var(--mu);font-size:14px;margin:4px 0}
+#msg{position:sticky;top:0;z-index:5;padding:10px 14px;border-radius:8px;margin-bottom:12px;display:none}
+#msg.ok{display:block;background:var(--gn);color:#fff}#msg.err{display:block;background:var(--rd);color:#fff}
+a{color:var(--pr);cursor:pointer}
+</style>
+</head>
+<body>
+<header><h1>Mailer Control Panel</h1><div id="who"></div></header>
+<main><div id="msg"></div><div id="app"></div></main>
+<script>
+// >>> Set this to the Production URL of the "Mailer: UI API" workflow webhook <<<
+const API = 'https://YOUR-N8N-HOST/webhook/ui-api';
+
+const $ = s => document.querySelector(s);
+const app = $('#app');
+let token = sessionStorage.getItem('mt') || '', st = {}, tab = 'launch';
+
+function msg(t, ok = true) { const m = $('#msg'); m.textContent = t; m.className = ok ? 'ok' : 'err'; scrollTo(0, 0); clearTimeout(msg.t); msg.t = setTimeout(() => m.className = '', 7000); }
+async function api(action, data = {}) {
+  try {
+    const r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action, token, ...data }) });
+    const j = await r.json();
+    if (j.auth === false) { logout(); msg(j.error, false); }
+    return j;
+  } catch (e) { return { ok: false, error: 'Network error: ' + e.message }; }
+}
+function logout() { token = ''; sessionStorage.removeItem('mt'); $('#who').innerHTML = ''; authView(); }
+const val = id => $('#' + id).value.trim();
+const checked = n => [...document.querySelectorAll(`input[name=${n}]:checked`)].map(x => x.value);
+function busy(b, on) { b.disabled = on; }
+
+/* ---------- auth ---------- */
+async function authView() {
+  const reset = new URLSearchParams(location.search).get('reset');
+  if (reset) {
+    app.innerHTML = `<div class="card"><h2>Set a new password</h2><label>New password (10+ characters)</label><input type="password" id="p1" autocomplete="new-password"><button id="go">Save password</button></div>`;
+    $('#go').onclick = async e => { busy(e.target, 1); const j = await api('reset_confirm', { token: reset, password: $('#p1').value }); busy(e.target, 0);
+      if (j.ok) { history.replaceState(null, '', location.pathname); msg('Password changed. Please sign in.'); authView(); } else msg(j.error, false); };
+    return;
+  }
+  const s = await api('status');
+  const setup = s.setup_needed;
+  app.innerHTML = `<div class="card"><h2>${setup ? 'Create the first account' : 'Sign in'}</h2>
+    <label>Email</label><input type="email" id="em" autocomplete="username">
+    <label>Password${setup ? ' (10+ characters)' : ''}</label><input type="password" id="pw" autocomplete="${setup ? 'new-password' : 'current-password'}">
+    <button id="go">${setup ? 'Create account' : 'Sign in'}</button>
+    ${setup ? '' : '<button class="sec" id="fp">Reset password</button>'}</div>`;
+  $('#go').onclick = async e => { busy(e.target, 1); const j = await api(setup ? 'setup' : 'login', { email: val('em'), password: $('#pw').value }); busy(e.target, 0);
+    if (j.ok && j.token) { token = j.token; sessionStorage.setItem('mt', token); load(); } else msg(j.error || 'Failed', false); };
+  if (!setup) $('#fp').onclick = async () => { if (!val('em')) return msg('Enter your email first', false); await api('reset_request', { email: val('em') }); msg('If this email is registered, a reset link has been sent.'); };
+}
+
+/* ---------- main ---------- */
+async function load() {
+  const j = await api('get_state');
+  if (!j.ok) return;
+  st = j; $('#who').innerHTML = `${j.user} <a id="lo">Sign out</a>`; $('#lo').onclick = logout;
+  render();
+}
+function render() {
+  const tabs = [['launch', 'Launch'], ['template', 'Email template'], ['prompt', 'AI prompt'], ['sig', 'Signature'], ['pdf', 'PDF']];
+  app.innerHTML = `<nav>${tabs.map(([k, n]) => `<button class="${k === tab ? 'on' : ''}" data-t="${k}">${n}</button>`).join('')}</nav><div id="pane"></div>`;
+  document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+  ({ launch, template, prompt: promptTab, sig, pdf })[tab]();
+}
+const S = () => st.settings || {};
+
+function launch() {
+  const mb = (S().mailboxes || st.mailboxes.join(',')).split(',');
+  const tr = (S().tiers || 'A+').split(',');
+  const sched = S().mode === 'scheduled';
+  $('#pane').innerHTML = `<div class="card"><h2>1. Mailboxes</h2><div class="row">${st.mailboxes.map(m => `<label><input type="checkbox" name="mb" value="${m}" ${mb.includes(m) ? 'checked' : ''}> ${m}</label>`).join('')}</div>
+    <label>Emails per mailbox per day</label><input type="number" id="lim" min="1" max="500" value="${S().daily_limit || 40}">
+    <h2 style="margin-top:18px">2. Client tiers (marketing categories)</h2><div class="row">${st.tiers.filter(t => t !== 'TEST').map(t => `<label><input type="checkbox" name="tr" value="${t}" ${tr.includes(t) ? 'checked' : ''}> ${t}</label>`).join('')}</div>
+    <h2 style="margin-top:18px">3. Start</h2><div class="row"><label><input type="radio" name="wh" value="now" ${sched ? '' : 'checked'}> Manual (start now)</label><label><input type="radio" name="wh" value="later" ${sched ? 'checked' : ''}> Scheduled</label></div>
+    <div id="dt" style="display:${sched ? 'block' : 'none'}"><label>Start date and time (US Eastern time)</label><input type="datetime-local" id="sa" value="${S().start_at || ''}"></div>
+    <p class="hint">Emails are sent Mon-Fri during US business hours. Test run sends only to clients with Tier TEST, ignoring limits and the schedule.</p>
+    <button id="start">Start mailing</button><button class="sec" id="test">Test run</button><button class="sec" id="save">Save settings</button><button class="stop" id="stop">STOP all mailings</button></div>`;
+  document.querySelectorAll('input[name=wh]').forEach(r => r.onchange = () => $('#dt').style.display = r.value === 'later' && r.checked ? 'block' : 'none');
+  const collect = () => ({ daily_limit: val('lim'), mailboxes: checked('mb').join(','), tiers: checked('tr').join(',') });
+  const valid = c => { if (!c.mailboxes) return msg('Select at least one mailbox', false), 0; if (!c.tiers) return msg('Select at least one tier', false), 0; const n = +c.daily_limit; if (!(n >= 1 && n <= 500)) return msg('Daily limit must be 1-500', false), 0; return 1; };
+  const run = async (e, action, extra, ask) => { const c = collect(); if (!valid(c)) return; if (ask && !confirm(ask)) return; busy(e.target, 1);
+    const j = await api(action, { settings: c, ...extra }); busy(e.target, 0); j.ok ? (msg(j.msg || 'Saved'), Object.assign(st.settings, c)) : msg(j.error, false); };
+  $('#save').onclick = e => run(e, 'save_settings', {});
+  $('#test').onclick = e => run(e, 'test', {}, 'Send test emails to the TEST tier now?');
+  $('#start').onclick = e => { const later = checked('wh').length ? document.querySelector('input[name=wh]:checked').value === 'later' : 0; run(e, 'start', later ? { when: 'later', start_at: val('sa') } : { when: 'now' }, later ? 'Schedule the mailing?' : 'Start the mailing now?'); };
+  $('#stop').onclick = async e => { if (!confirm('Stop ALL running mailings?')) return; busy(e.target, 1); const j = await api('stop'); busy(e.target, 0); j.ok ? msg(j.msg) : msg(j.error, false); };
+}
+
+function fileInto(id, accept) {
+  const f = document.createElement('input'); f.type = 'file'; f.accept = accept;
+  f.onchange = () => { const r = new FileReader(); r.onload = () => { $('#' + id).value = r.result; }; f.files[0] && r.readAsText(f.files[0]); };
+  f.click();
+}
+
+function template() {
+  $('#pane').innerHTML = `<div class="card"><h2>Email template for a tier</h2>
+    <label>Tier</label><select id="tt">${st.tiers.map(t => `<option>${t}</option>`).join('')}</select>
+    <label>Mode</label><select id="tm"><option value="">Default for the tier (A+ = AI personalized)</option><option value="personalize">AI personalized</option><option value="standard">Standard (no AI)</option></select>
+    <label>Subject</label><input type="text" id="ts"><label>Body</label><textarea id="tb"></textarea>
+    <p class="hint">Use <b>XXX</b> where the company name goes. The first line <b>Hello,</b> becomes <b>Hello First Name,</b> when the name is known. The unsubscribe line and signature are added automatically.</p>
+    <button id="sv">Save template</button><button class="sec" id="ld">Load text from file</button></div>`;
+  const fill = () => { const t = (st.templates || []).find(x => x.Tier === val('tt')) || {}; $('#ts').value = t.Subject || ''; $('#tb').value = t.Body || ''; $('#tm').value = t.Mode || ''; };
+  $('#tt').onchange = fill; fill();
+  $('#ld').onclick = () => fileInto('tb', '.txt,text/plain');
+  $('#sv').onclick = async e => { busy(e.target, 1); const j = await api('save_template', { tier: val('tt'), subject: val('ts'), body: $('#tb').value, mode: val('tm') }); busy(e.target, 0);
+    if (j.ok) { st.templates = (st.templates || []).filter(x => x.Tier !== val('tt')).concat({ Tier: val('tt'), Subject: val('ts'), Body: $('#tb').value, Mode: val('tm') }); msg('Template saved for tier ' + val('tt')); } else msg(j.error, false); };
+}
+
+function textTab(title, key, action, hint, btn) {
+  $('#pane').innerHTML = `<div class="card"><h2>${title}</h2><textarea id="tx"></textarea><p class="hint">${hint}</p><button id="sv">${btn}</button><button class="sec" id="ld">Load from file</button></div>`;
+  $('#tx').value = S()[key] || '';
+  $('#ld').onclick = () => fileInto('tx', '.txt,text/plain');
+  $('#sv').onclick = async e => { busy(e.target, 1); const j = await api(action, { [key]: $('#tx').value }); busy(e.target, 0); j.ok ? (S()[key] = $('#tx').value, msg('Saved')) : msg(j.error, false); };
+}
+const promptTab = () => textTab('System prompt for the AI assistant', 'prompt', 'save_prompt', 'Used for AI-personalized emails. The model must answer in the format: a line <b>Subject: ...</b>, a blank line, then one paragraph. Leave empty to use the default prompt.', 'Save prompt');
+const sig = () => textTab('Email signature', 'signature', 'save_signature', 'Added after the closing line <b>Thanks,</b>. Leave empty to use the sender name.', 'Save signature');
+
+function pdf() {
+  $('#pane').innerHTML = `<div class="card"><h2>PDF attachment</h2>
+    <p>Current file: <b>${S().pdf_name || 'none'}</b></p>
+    <label><input type="checkbox" id="pe" ${S().pdf_enabled === 'TRUE' ? 'checked' : ''}> Attach this PDF to every email</label>
+    <label>Upload a new PDF (up to 4 MB)</label><input type="file" id="pf" accept="application/pdf,.pdf">
+    <button id="up">Upload PDF</button><button class="sec" id="sv">Save attach option</button></div>`;
+  $('#sv').onclick = async e => { busy(e.target, 1); const v = $('#pe').checked ? 'TRUE' : 'FALSE'; const j = await api('save_settings', { settings: { pdf_enabled: v } }); busy(e.target, 0); j.ok ? (S().pdf_enabled = v, msg('Saved')) : msg(j.error, false); };
+  $('#up').onclick = e => { const f = $('#pf').files[0]; if (!f) return msg('Choose a PDF file', false); if (f.size > 4e6) return msg('File is larger than 4 MB', false);
+    busy(e.target, 1); const r = new FileReader();
+    r.onload = async () => { const j = await api('upload_pdf', { name: f.name, data: r.result.split(',')[1] }); busy(e.target, 0);
+      if (j.ok) { S().pdf_name = f.name; S().pdf_enabled = 'TRUE'; msg('PDF uploaded and enabled'); pdf(); } else msg(j.error, false); };
+    r.readAsDataURL(f); };
+}
+
+token ? load() : authView();
+</script>
+</body>
+</html>
