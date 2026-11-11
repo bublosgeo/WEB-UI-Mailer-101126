@@ -141,7 +141,36 @@ function textTab(title, key, action, hint, btn) {
   $('#sv').onclick = async e => { busy(e.target, 1); const j = await api(action, { [key]: $('#tx').value }); busy(e.target, 0); j.ok ? (S()[key] = $('#tx').value, msg('Saved')) : msg(j.error, false); };
 }
 const promptTab = () => textTab('System prompt for the AI assistant', 'prompt', 'save_prompt', 'Used for AI-personalized emails. The model must answer in the format: a line <b>Subject: ...</b>, a blank line, then one paragraph. Leave empty to use the default prompt.', 'Save prompt');
-const sig = () => textTab('Email signature', 'signature', 'save_signature', 'Added after the closing line <b>Thanks,</b>. Leave empty to use the sender name.', 'Save signature');
+function sig() {
+  const g = k => esc(S()[k] || '');
+  $('#pane').innerHTML = `<div class="card"><h2>Email signature</h2>
+    <label>Signature text</label><textarea id="sg" style="min-height:100px"></textarea>
+    <p class="hint">Added after the closing line <b>Thanks,</b>. Leave empty to use the sender name.</p>
+    <label>Website link (optional)</label><input type="text" id="lu" placeholder="https://www.example.com" value="${g('sig_link_url')}">
+    <label>Link text (optional)</label><input type="text" id="lt" placeholder="www.example.com" value="${g('sig_link_text')}">
+    <label>Logo (PNG or JPEG, up to 1 MB)</label>
+    ${S().logo_url ? `<p><img src="${g('logo_url')}" alt="logo" style="max-width:${Math.min(+S().logo_width || 160, 300)}px;border:1px solid var(--bd);border-radius:6px"></p>` : '<p class="hint">No logo yet.</p>'}
+    <input type="file" id="lf" accept="image/png,image/jpeg"><button class="sec" id="lup">Upload logo</button>
+    <label>or a direct image URL (https)</label><input type="text" id="lg" value="${g('logo_url')}">
+    <label>Logo width in the email (px)</label><input type="number" id="lw" min="40" max="600" value="${S().logo_width || 160}">
+    <p class="hint">The logo is a picture linked to the website. Some mail apps hide images until the recipient allows them. Uploaded logos are stored on your Google Drive with a public link.</p>
+    <button id="sv">Save signature</button><button class="sec" id="ld">Load text from file</button><button class="sec" id="rm">Remove logo</button></div>`;
+  $('#sg').value = S().signature || '';
+  $('#ld').onclick = () => fileInto('sg', '.txt,text/plain');
+  const save = async () => { const d = { signature: $('#sg').value, link_url: val('lu'), link_text: val('lt'), logo_url: val('lg'), logo_width: val('lw') };
+    const j = await api('save_signature', d); if (j.ok) Object.assign(S(), { signature: d.signature, sig_link_url: d.link_url, sig_link_text: d.link_text, logo_url: d.logo_url, logo_width: d.logo_width }); return j; };
+  $('#sv').onclick = async e => { busy(e.target, 1); const j = await save(); busy(e.target, 0); j.ok ? (msg('Signature saved'), sig()) : msg(j.error, false); };
+  $('#rm').onclick = async e => { $('#lg').value = ''; busy(e.target, 1); const j = await save(); busy(e.target, 0); j.ok ? (msg('Logo removed'), sig()) : msg(j.error, false); };
+  $('#lup').onclick = async e => {
+    const f = $('#lf').files[0]; if (!f) return msg('Choose a PNG or JPEG file', false);
+    if (!/^image\/(png|jpeg)$/.test(f.type)) return msg('Only PNG and JPEG images are allowed', false);
+    if (f.size > MB) return msg('Image is larger than 1 MB', false);
+    busy(e.target, 1); const s0 = await save(); if (!s0.ok) { busy(e.target, 0); return msg(s0.error, false); }
+    const data = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.readAsDataURL(f); });
+    const j = await api('upload_logo', { name: f.name, data }); busy(e.target, 0);
+    if (j.ok) { await load(); msg('Logo uploaded'); } else msg(j.error, false);
+  };
+}
 
 const MAX_FILE_MB = 10, MAX_TOTAL_MB = 18, MB = 1048576;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
