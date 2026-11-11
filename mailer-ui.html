@@ -26,6 +26,7 @@ nav button.on{background:var(--pr);color:#fff;border-color:var(--pr)}
 .hint{color:var(--mu);font-size:14px;margin:4px 0}
 #msg{position:sticky;top:0;z-index:5;padding:10px 14px;border-radius:8px;margin-bottom:12px;display:none}
 #msg.ok{display:block;background:var(--gn);color:#fff}#msg.err{display:block;background:var(--rd);color:#fff}
+.file{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bd)}.file button{margin:0;padding:6px 10px}
 a{color:var(--pr);cursor:pointer}
 </style>
 </head>
@@ -99,6 +100,7 @@ function launch() {
     <h2 style="margin-top:18px">2. Client tiers (marketing categories)</h2><div class="row">${st.tiers.filter(t => t !== 'TEST').map(t => `<label><input type="checkbox" name="tr" value="${t}" ${tr.includes(t) ? 'checked' : ''}> ${t}</label>`).join('')}</div>
     <h2 style="margin-top:18px">3. Start</h2><div class="row"><label><input type="radio" name="wh" value="now" ${sched ? '' : 'checked'}> Manual (start now)</label><label><input type="radio" name="wh" value="later" ${sched ? 'checked' : ''}> Scheduled</label></div>
     <div id="dt" style="display:${sched ? 'block' : 'none'}"><label>Start date and time (US Eastern time)</label><input type="datetime-local" id="sa" value="${S().start_at || ''}"></div>
+    <p class="hint">Attachments: ${S().pdf_enabled === 'TRUE' && pdfList().length ? pdfList().map(f => esc(f.name)).join(', ') : 'none'}</p>
     <p class="hint">Emails are sent Mon-Fri during US business hours. Test run sends only to clients with Tier TEST, ignoring limits and the schedule.</p>
     <button id="start">Start mailing</button><button class="sec" id="test">Test run</button><button class="sec" id="save">Save settings</button><button class="stop" id="stop">STOP all mailings</button></div>`;
   document.querySelectorAll('input[name=wh]').forEach(r => r.onchange = () => $('#dt').style.display = r.value === 'later' && r.checked ? 'block' : 'none');
@@ -141,18 +143,34 @@ function textTab(title, key, action, hint, btn) {
 const promptTab = () => textTab('System prompt for the AI assistant', 'prompt', 'save_prompt', 'Used for AI-personalized emails. The model must answer in the format: a line <b>Subject: ...</b>, a blank line, then one paragraph. Leave empty to use the default prompt.', 'Save prompt');
 const sig = () => textTab('Email signature', 'signature', 'save_signature', 'Added after the closing line <b>Thanks,</b>. Leave empty to use the sender name.', 'Save signature');
 
+const MAX_FILE_MB = 10, MAX_TOTAL_MB = 18, MB = 1048576;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const mb = n => (n / MB).toFixed(1) + ' MB';
+const pdfList = () => { try { const l = JSON.parse(S().pdf_files || '[]'); if (S().pdf_files) return l; } catch (e) {} return S().pdf_file_id ? [{ id: S().pdf_file_id, name: S().pdf_name || 'file.pdf', size: 0 }] : []; };
+
 function pdf() {
-  $('#pane').innerHTML = `<div class="card"><h2>PDF attachment</h2>
-    <p>Current file: <b>${S().pdf_name || 'none'}</b></p>
-    <label><input type="checkbox" id="pe" ${S().pdf_enabled === 'TRUE' ? 'checked' : ''}> Attach this PDF to every email</label>
-    <label>Upload a new PDF (up to 4 MB)</label><input type="file" id="pf" accept="application/pdf,.pdf">
-    <button id="up">Upload PDF</button><button class="sec" id="sv">Save attach option</button></div>`;
+  const list = pdfList(), used = list.reduce((t, f) => t + (f.size || 0), 0);
+  $('#pane').innerHTML = `<div class="card"><h2>PDF attachments</h2>
+    <label><input type="checkbox" id="pe" ${S().pdf_enabled === 'TRUE' ? 'checked' : ''}> Attach these files to every email</label>
+    <label>Uploaded files: ${list.length} (${mb(used)} of ${MAX_TOTAL_MB} MB)</label>
+    ${list.length ? list.map((f, i) => `<div class="file"><span>${esc(f.name)} <span class="hint">${f.size ? mb(f.size) : ''}</span></span><button class="sec" data-i="${i}">Remove</button></div>`).join('') : '<p class="hint">No files uploaded yet.</p>'}
+    <label>Add PDF files (each up to ${MAX_FILE_MB} MB, all together up to ${MAX_TOTAL_MB} MB)</label><input type="file" id="pf" accept="application/pdf,.pdf" multiple>
+    <button id="up">Upload</button><button class="sec" id="sv">Save attach option</button></div>`;
   $('#sv').onclick = async e => { busy(e.target, 1); const v = $('#pe').checked ? 'TRUE' : 'FALSE'; const j = await api('save_settings', { settings: { pdf_enabled: v } }); busy(e.target, 0); j.ok ? (S().pdf_enabled = v, msg('Saved')) : msg(j.error, false); };
-  $('#up').onclick = e => { const f = $('#pf').files[0]; if (!f) return msg('Choose a PDF file', false); if (f.size > 4e6) return msg('File is larger than 4 MB', false);
-    busy(e.target, 1); const r = new FileReader();
-    r.onload = async () => { const j = await api('upload_pdf', { name: f.name, data: r.result.split(',')[1] }); busy(e.target, 0);
-      if (j.ok) { S().pdf_name = f.name; S().pdf_enabled = 'TRUE'; msg('PDF uploaded and enabled'); pdf(); } else msg(j.error, false); };
-    r.readAsDataURL(f); };
+  document.querySelectorAll('.file button').forEach(b => b.onclick = async () => { const f = list[b.dataset.i]; if (!confirm('Remove ' + f.name + '?')) return;
+    const j = await api('delete_pdf', { id: f.id }); if (j.ok) { await load(); msg('Removed'); } else msg(j.error, false); });
+  $('#up').onclick = async e => {
+    const fs = [...$('#pf').files]; if (!fs.length) return msg('Choose PDF files', false);
+    let tot = used; for (const f of fs) { if (f.size > MAX_FILE_MB * MB) return msg(f.name + ' is larger than ' + MAX_FILE_MB + ' MB', false); tot += f.size; }
+    if (tot > MAX_TOTAL_MB * MB) return msg('Total size would exceed ' + MAX_TOTAL_MB + ' MB', false);
+    busy(e.target, 1); let ok = 0;
+    for (const f of fs) {
+      msg('Uploading ' + f.name + ' (' + (ok + 1) + '/' + fs.length + ')...');
+      const data = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.readAsDataURL(f); });
+      const j = await api('upload_pdf', { name: f.name, data }); if (!j.ok) { msg(f.name + ': ' + j.error, false); break; } ok++;
+    }
+    busy(e.target, 0); await load(); if (ok) msg(ok + ' file(s) uploaded');
+  };
 }
 
 token ? load() : authView();
