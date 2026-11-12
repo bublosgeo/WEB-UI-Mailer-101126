@@ -50,7 +50,7 @@ async function api(action, data = {}) {
     return j;
   } catch (e) { return { ok: false, error: 'Network error: ' + e.message }; }
 }
-function logout() { token = ''; sessionStorage.removeItem('mt'); $('#who').innerHTML = ''; authView(); }
+function logout() { draft = null; tplDraft = {}; tplTier = ''; token = ''; sessionStorage.removeItem('mt'); $('#who').innerHTML = ''; authView(); }
 const val = id => $('#' + id).value.trim();
 const checked = n => [...document.querySelectorAll(`input[name=${n}]:checked`)].map(x => x.value);
 function busy(b, on) { b.disabled = on; }
@@ -86,31 +86,40 @@ async function load() {
 function render() {
   const tabs = [['launch', 'Launch'], ['template', 'Email template'], ['prompt', 'AI prompt'], ['sig', 'Signature'], ['pdf', 'PDF']];
   app.innerHTML = `<nav>${tabs.map(([k, n]) => `<button class="${k === tab ? 'on' : ''}" data-t="${k}">${n}</button>`).join('')}</nav><div id="pane"></div>`;
-  document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+  document.querySelectorAll('nav button').forEach(b => b.onclick = () => { grabLaunch(); grabTpl(); tab = b.dataset.t; render(); });
   ({ launch, template, prompt: promptTab, sig, pdf })[tab]();
 }
 const S = () => st.settings || {};
 
+let draft = null, tplTier = '', tplDraft = {};
+const initDraft = () => ({ mailboxes: (S().mailboxes || st.mailboxes.join(',')).split(','), tiers: (S().tiers || 'A+').split(','), limit: S().daily_limit || 40, when: S().mode === 'scheduled' ? 'later' : 'now', start_at: S().start_at || '' });
+function grabLaunch() {
+  if (!$('#lim')) return;
+  const w = document.querySelector('input[name=wh]:checked');
+  draft = { mailboxes: checked('mb'), tiers: checked('tr'), limit: val('lim'), when: w ? w.value : 'now', start_at: val('sa') };
+}
+function grabTpl() { if (!$('#tt')) return; tplDraft[val('tt')] = { Subject: val('ts'), Body: $('#tb').value, Mode: val('tm') }; tplTier = val('tt'); }
+
 function launch() {
-  const mb = (S().mailboxes || st.mailboxes.join(',')).split(',');
-  const tr = (S().tiers || 'A+').split(',');
-  const sched = S().mode === 'scheduled';
-  $('#pane').innerHTML = `<div class="card"><h2>1. Mailboxes</h2><div class="row">${st.mailboxes.map(m => `<label><input type="checkbox" name="mb" value="${m}" ${mb.includes(m) ? 'checked' : ''}> ${m}</label>`).join('')}</div>
-    <label>Emails per mailbox per day</label><input type="number" id="lim" min="1" max="500" value="${S().daily_limit || 40}">
-    <h2 style="margin-top:18px">2. Client tiers (marketing categories)</h2><div class="row">${st.tiers.filter(t => t !== 'TEST').map(t => `<label><input type="checkbox" name="tr" value="${t}" ${tr.includes(t) ? 'checked' : ''}> ${t}</label>`).join('')}</div>
+  draft = draft || initDraft(); const d = draft, sched = d.when === 'later';
+  $('#pane').innerHTML = `<div class="card"><h2>1. Mailboxes</h2><div class="row">${st.mailboxes.map(m => `<label><input type="checkbox" name="mb" value="${m}" ${d.mailboxes.includes(m) ? 'checked' : ''}> ${m}</label>`).join('')}</div>
+    <label>Emails per mailbox per day</label><input type="number" id="lim" min="1" max="500" value="${d.limit}">
+    <h2 style="margin-top:18px">2. Client tiers (marketing categories)</h2><div class="row">${st.tiers.filter(t => t !== 'TEST').map(t => `<label><input type="checkbox" name="tr" value="${t}" ${d.tiers.includes(t) ? 'checked' : ''}> ${t}</label>`).join('')}</div>
     <h2 style="margin-top:18px">3. Start</h2><div class="row"><label><input type="radio" name="wh" value="now" ${sched ? '' : 'checked'}> Manual (start now)</label><label><input type="radio" name="wh" value="later" ${sched ? 'checked' : ''}> Scheduled</label></div>
-    <div id="dt" style="display:${sched ? 'block' : 'none'}"><label>Start date and time (US Eastern time)</label><input type="datetime-local" id="sa" value="${S().start_at || ''}"></div>
+    <div id="dt" style="display:${sched ? 'block' : 'none'}"><label>Start date and time (US Eastern time)</label><input type="datetime-local" id="sa" value="${d.start_at}"></div>
     <p class="hint">Attachments: ${S().pdf_enabled === 'TRUE' && pdfList().length ? pdfList().map(f => esc(f.name)).join(', ') : 'none'}</p>
-    <p class="hint">Emails are sent Mon-Fri during US business hours. Test run sends only to clients with Tier TEST, ignoring limits and the schedule.</p>
+    <p class="hint">Emails are sent Mon-Fri during US business hours. Test run sends only to clients with Tier TEST, ignoring limits and the schedule. Your choices on this tab are kept while you switch tabs; press Save settings to store them.</p>
     <button id="start">Start mailing</button><button class="sec" id="test">Test run</button><button class="sec" id="save">Save settings</button><button class="stop" id="stop">STOP all mailings</button></div>`;
-  document.querySelectorAll('input[name=wh]').forEach(r => r.onchange = () => $('#dt').style.display = r.value === 'later' && r.checked ? 'block' : 'none');
-  const collect = () => ({ daily_limit: val('lim'), mailboxes: checked('mb').join(','), tiers: checked('tr').join(',') });
+  document.querySelectorAll('#pane input').forEach(i => i.onchange = i.oninput = () => { grabLaunch(); $('#dt').style.display = draft.when === 'later' ? 'block' : 'none'; });
+  const collect = () => { grabLaunch(); const x = draft; return { daily_limit: x.limit, mailboxes: x.mailboxes.join(','), tiers: x.tiers.join(','), mode: x.when === 'later' ? 'scheduled' : 'manual', start_at: x.start_at }; };
   const valid = c => { if (!c.mailboxes) return msg('Select at least one mailbox', false), 0; if (!c.tiers) return msg('Select at least one tier', false), 0; const n = +c.daily_limit; if (!(n >= 1 && n <= 500)) return msg('Daily limit must be 1-500', false), 0; return 1; };
   const run = async (e, action, extra, ask) => { const c = collect(); if (!valid(c)) return; if (ask && !confirm(ask)) return; busy(e.target, 1);
-    const j = await api(action, { settings: c, ...extra }); busy(e.target, 0); j.ok ? (msg(j.msg || 'Saved'), Object.assign(st.settings, c)) : msg(j.error, false); };
+    const j = await api(action, { settings: c, ...extra }); busy(e.target, 0);
+    if (j.ok) { msg(j.msg || 'Saved'); Object.assign(st.settings, c); if (action === 'start' && !extra.start_at) { st.settings.mode = 'manual'; st.settings.start_at = ''; draft.start_at = ''; } } else msg(j.error, false); };
   $('#save').onclick = e => run(e, 'save_settings', {});
   $('#test').onclick = e => run(e, 'test', {}, 'Send test emails to the TEST tier now?');
-  $('#start').onclick = e => { const later = checked('wh').length ? document.querySelector('input[name=wh]:checked').value === 'later' : 0; run(e, 'start', later ? { when: 'later', start_at: val('sa') } : { when: 'now' }, later ? 'Schedule the mailing?' : 'Start the mailing now?'); };
+  $('#start').onclick = e => { grabLaunch(); const later = draft.when === 'later'; if (later && !draft.start_at) return msg('Choose a start date and time', false);
+    run(e, 'start', later ? { when: 'later', start_at: draft.start_at } : { when: 'now' }, later ? 'Schedule the mailing?' : 'Start the mailing now?'); };
   $('#stop').onclick = async e => { if (!confirm('Stop ALL running mailings?')) return; busy(e.target, 1); const j = await api('stop'); busy(e.target, 0); j.ok ? msg(j.msg) : msg(j.error, false); };
 }
 
@@ -121,17 +130,19 @@ function fileInto(id, accept) {
 }
 
 function template() {
+  tplTier = tplTier || ((draft && draft.tiers.find(t => st.tiers.includes(t))) || st.tiers[0]);
   $('#pane').innerHTML = `<div class="card"><h2>Email template for a tier</h2>
-    <label>Tier</label><select id="tt">${st.tiers.map(t => `<option>${t}</option>`).join('')}</select>
+    <label>Tier</label><select id="tt">${st.tiers.map(t => `<option ${t === tplTier ? 'selected' : ''}>${t}</option>`).join('')}</select>
     <label>Mode</label><select id="tm"><option value="">Default for the tier (A+ = AI personalized)</option><option value="personalize">AI personalized</option><option value="standard">Standard (no AI)</option></select>
     <label>Subject</label><input type="text" id="ts"><label>Body</label><textarea id="tb"></textarea>
-    <p class="hint">Use <b>XXX</b> where the company name goes. The first line <b>Hello,</b> becomes <b>Hello First Name,</b> when the name is known. The unsubscribe line and signature are added automatically.</p>
+    <p class="hint">Use <b>XXX</b> where the company name goes. The first line <b>Hello,</b> becomes <b>Hello First Name,</b> when the name is known. The unsubscribe line and signature are added automatically. Unsaved edits are kept while you switch tabs or tiers.</p>
     <button id="sv">Save template</button><button class="sec" id="ld">Load text from file</button></div>`;
-  const fill = () => { const t = (st.templates || []).find(x => x.Tier === val('tt')) || {}; $('#ts').value = t.Subject || ''; $('#tb').value = t.Body || ''; $('#tm').value = t.Mode || ''; };
-  $('#tt').onchange = fill; fill();
+  const fill = () => { const t = tplDraft[tplTier] || (st.templates || []).find(x => x.Tier === tplTier) || {}; $('#ts').value = t.Subject || ''; $('#tb').value = t.Body || ''; $('#tm').value = t.Mode || ''; };
+  $('#tt').onchange = () => { tplDraft[tplTier] = { Subject: val('ts'), Body: $('#tb').value, Mode: val('tm') }; tplTier = val('tt'); fill(); };
+  fill();
   $('#ld').onclick = () => fileInto('tb', '.txt,text/plain');
-  $('#sv').onclick = async e => { busy(e.target, 1); const j = await api('save_template', { tier: val('tt'), subject: val('ts'), body: $('#tb').value, mode: val('tm') }); busy(e.target, 0);
-    if (j.ok) { st.templates = (st.templates || []).filter(x => x.Tier !== val('tt')).concat({ Tier: val('tt'), Subject: val('ts'), Body: $('#tb').value, Mode: val('tm') }); msg('Template saved for tier ' + val('tt')); } else msg(j.error, false); };
+  $('#sv').onclick = async e => { const tier = val('tt'); busy(e.target, 1); const j = await api('save_template', { tier, subject: val('ts'), body: $('#tb').value, mode: val('tm') }); busy(e.target, 0);
+    if (j.ok) { st.templates = (st.templates || []).filter(x => x.Tier !== tier).concat({ Tier: tier, Subject: val('ts'), Body: $('#tb').value, Mode: val('tm') }); delete tplDraft[tier]; msg('Template saved for tier ' + tier); } else msg(j.error, false); };
 }
 
 function textTab(title, key, action, hint, btn) {
